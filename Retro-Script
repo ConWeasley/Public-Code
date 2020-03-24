@@ -1,0 +1,208 @@
+import requests
+from obspy import UTCDateTime
+from datetime import date
+
+'''
+Class for giving the output some formatting.
+'''
+class color:
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RED = '\033[31m'
+    END = '\033[0m'
+'''
+api token was created from the GHA1 pagerduty account
+'''
+
+API_User_Token = '994rgQHWNxNskuPEzgHf'
+pagerduty_session = requests.Session()
+
+pagerduty_session.headers.update({
+  'Authorization': 'Token token=' + API_User_Token,
+  'Accept': 'application/vnd.pagerduty+json;version=2'
+})
+
+
+'''
+rolename of course defines the name of the specific roles as part of the output. Just for display purposes.
+dutyofficers is an api input for each role, to pull whom ever is on duty.
+e.g. dutyofficers[0] pulls details for the Seismic Duty Officer.
+Science Advisors aren't included because they don't get paid by payroll??
+'''
+
+rolename = ['Seismic Duty Officer', 
+            'Volcano Duty Officer',  
+            'Application Support', 
+            'PIM Duty Officer', 
+            'Landslide Duty Officer', 
+            'Response Manager']
+
+dutyofficers = ['PIXKZKY', 
+                'PPFJQPD', 
+                'P4UBC15', 
+                'PHTI41Q', 
+                'PKH8OVH', 
+                'PK28YKI']
+
+'''
+This allows us to format the output, where we can make reference to days of the week for when people cover shifts.
+Also, the monthday list allows us to more formally end numbers as they should when they are a day of the month.
+e.g. 17th, instead of just 17. or 2nd instead of just 2.
+'''
+
+weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+'''
+For the time period calculated. oncallstaff is appended with all the duty officers one for that period in each role.
+'''
+oncallstaff = []
+'''
+weekdate is used as part of the function. The function is ran at the very bottom, and depending on the day of the week it is ran,
+a value in the function will change so that no matter what day of the week you run this, the output is the same.
+'''
+
+'''
+This defines a time span which sees who is in a duty role.
+The ideal outcome is that this will always run from midnight on sunday, and pull back to 9am on monday.
+The api includes the start and end time as part of the get request.
+the minus 1 second in present time is to make it 2359 on SUNDAY, instead of 0000 on MONDAY.
+'''
+presenttimeretro = UTCDateTime(str(UTCDateTime.now())[:11]+'11:00:00')-1 
+pasttimeretro = UTCDateTime(str(UTCDateTime.now())[:11]+'11:00:00') -572400
+monday = UTCDateTime(str(UTCDateTime.now())[:11]+'11:00:00') - 504800 #THis is to get the date/month timings right for the first line of output.
+    
+'''
+This print is part of the old email template, reminding the user to do a few things before sending it off.
+'''
+    
+print(color.RED + 'DELETE BEFORE SENDING\nEmail to Debbie and Sharyn at payroll@gns.cri.nz\nCopy in Clinton\nSend from EGM.\n'+
+        'Remember to edit subject line and double check all details and dates.\n' +
+        'Remember to identify which day the cover was for (i.e. Monday, Saturday)\n' +
+        'Either state XXX covered for XX days or state no changes.\n' + color.END)
+
+print('Good morning,\n\nPlease find a summary of the Duty Officer schedule retrospective for the past week: ' +
+                color.BOLD + 'Monday ' + (str(monday)[8:10]) + '/' + (str(monday)[5:7])  + 
+                ' to Sunday ' + (str(presenttimeretro)[8:10]) + '/' + (str(presenttimeretro)[5:7]) + color.END + '.\n')
+try:
+    for b in range(6):
+        schedules = pagerduty_session.get('https://api.pagerduty.com/schedules/' +
+                                            dutyofficers[b] + 
+                                            '?time_zone=UTC&since=' + 
+                                            str(pasttimeretro) + 
+                                            '&until=' + 
+                                            str(presenttimeretro-1))
+
+        oncall = schedules.json()
+        oncallstaff.append(oncall['schedule']['final_schedule']['rendered_schedule_entries'])
+
+        firstpassprint = 0
+        noschedulechange = 0
+
+        for a in range(len((oncallstaff[-1]))):
+            start = UTCDateTime(oncallstaff[-1][a]['start']) + (3600*13)
+            end = UTCDateTime(oncallstaff[-1][a]['end']) + (3600*13)
+
+            if rolename[b] == 'Application Support' and firstpassprint == 0:
+                firstpassprint +=1
+                try:
+                    titlerole = oncallstaff[-1][0]['user']['summary']
+                    print( color.UNDERLINE + rolename[b] + color.END + ' - ' + color.BOLD + titlerole + color.END + ' was scheduled for the week.')
+                    noschedulechange += 1
+                except(IndexError):
+                    titlerole = oncallstaff[-1][0]['user']['summary']
+                    print( color.UNDERLINE + rolename[b] + color.END + ' - ' + color.BOLD + titlerole + color.END + ' was scheduled for the week.')
+                    print('No Change.')
+                    break
+
+            if firstpassprint == 0:
+                titlerole = oncallstaff[-1][a]['user']['summary']
+                print(color.UNDERLINE + rolename[b] + color.END + ' - ' + 
+                        color.BOLD + oncallstaff[-1][a]['user']['summary'] + color.END + ' was scheduled for the week.')
+
+                firstpassprint +=1
+                if len((oncallstaff[-1])) == 1:
+                    break
+            '''
+            1. Any shift cover for LESS than 12 hours is ignored entirely.
+            2. Any shift that starts after 9am on one day, and finishes before 9pm the next day,
+            is considered to have worked ONE day.
+            3. Any shift that starts after 9am on one day, and finishes before midnight on that same day,
+            is considered to have worked ONE day.
+            4. Any shift that starts after 9pm on one day, and finishes before 9pm the next day, 
+            is considered to have worked ZERO days
+            5. Any shift that starts after 9pm on one day, and finishes before 9pm 2 days later, 
+            is considered to have worked ONE day.
+            6. Any shift that starts after 9pm on one day, and finishes before 9pm 2+ days later, 
+            is considered to have worked ONE or MORE days.
+            
+            More factors that constrain the data that is printed should be added here as problems are discovered.
+            '''        
+            if end-start < (12*3600) or oncallstaff[-1][a]['user']['summary'] == titlerole:
+                pass
+
+            elif str(start)[11:16] >= '09:00' and (weekdays.index(str(weekdays[start.weekday]))+ 1 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '21:00':
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + (str(weekdays[start.weekday])))
+                noschedulechange += 1
+
+            elif str(start)[11:16] >= '09:00' and (weekdays.index(str(weekdays[start.weekday])) == weekdays.index(str(weekdays[end.weekday]))) and (str(end)[11:16] <= '23:59' or str(end)[11:16] == '00:00'):
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + (str(weekdays[start.weekday])))
+
+            elif str(start)[11:16] >= '21:00' and (weekdays.index(str(weekdays[start.weekday]))+1 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '21:00':
+                pass
+
+            elif str(start)[11:16] >= '21:00' and (weekdays.index(str(weekdays[start.weekday]))+2 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '09:00': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + (str(weekdays[start.weekday]+1)))
+                noschedulechange += 1
+
+            elif str(start)[11:16] >= '21:00' and (weekdays.index(str(weekdays[start.weekday])) != weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '21:00': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + (str(weekdays[start.weekday]+1)) + ' through ' + (str(weekdays[end.weekday]-1)))
+                noschedulechange += 1
+
+            elif str(start)[11:16] >= '09:00' and (weekdays.index(str(weekdays[start.weekday])) != weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '21:00':
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + (str(weekdays[start.weekday])) + ' through ' + (str(weekdays[(end.weekday)-1])))
+                noschedulechange += 1
+
+            elif str(start)[11:16] >= '21:00' and (weekdays.index(str(weekdays[start.weekday]))+1 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] <= '23:59': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END + ' through ' +
+                     (str(weekdays[start.weekday+1])))
+                noschedulechange += 1
+
+            elif str(start)[11:16] >= '21:00' and (weekdays.index(str(weekdays[start.weekday]))+2 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] > '09:00': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END + ' through ' +
+                     (str(weekdays[start.weekday+1]))) 
+                noschedulechange += 1
+            
+            elif str(start)[11:16] <= '09:00' and (weekdays.index(str(weekdays[start.weekday]))+1 == weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] < '09:00': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END + ' through ' +
+                     (str(weekdays[start.weekday]))) 
+                noschedulechange += 1
+
+            elif str(start)[11:16] <= '09:00' and (weekdays.index(str(weekdays[start.weekday])) != weekdays.index(str(weekdays[end.weekday]))) and str(end)[11:16] < '09:00': 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END + ' through ' +
+                     (str(weekdays[start.weekday])) + " through " + (str(weekdays[start.weekday-1])))  
+                noschedulechange += 1
+            
+            elif (weekdays.index(str(weekdays[start.weekday])) == weekdays.index(str(weekdays[end.weekday]))): 
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END + ' covered ' +
+                     (str(weekdays[start.weekday])))
+                noschedulechange += 1
+
+            else:
+                print(color.BOLD + (oncallstaff[-1][a]['user']['summary']) + color.END +
+                    ' covered ' + 
+                    str(weekdays[start.weekday]) + 
+                    ' through ' + 
+                    (weekdays[end.weekday]))
+                noschedulechange += 1
+        if noschedulechange == 0:
+            print('No Change.')
+
+        print('\n')
+    print('\nAny other information we can provide, or changes to the way we provide this information, please reply directly to this email. \n\nKind Regards, \n\nThe NGMC')  
+except:
+    'AN ERROR HAS OCCURRED. PLEASE REVIEW THE ROSTER MANUALLY.'
