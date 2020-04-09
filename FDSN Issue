@@ -1,0 +1,83 @@
+import requests
+from obspy import UTCDateTime
+from datetime import datetime, timedelta
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy
+import numpy as np
+from collections import Counter
+
+timestart = str(UTCDateTime('2019-05-01'))
+timeend = str(UTCDateTime('2019-05-06'))
+
+publicid, quakehistory_json, automatic_json, best_json = ([] for i in range(4))
+earthquake_pull = requests.get("http://wfs.geonet.org.nz/geonet/ows?service=WFS&version=1.0.0&request="+
+                                   "GetFeature&typeName=geonet:quake_search_v1&outputFormat=json&cql_filter=BBOX(origin_geom,163,-32,185,-50)+AND+origintime>=" + timestart + 
+                               "+AND+origintime<=" + timeend)
+earthquake_pull_json = earthquake_pull.json()
+
+for index, value in enumerate(earthquake_pull_json['features']):
+    publicid.append(value['properties']['publicid'])
+
+#pulls the quake history for each event pulled in json format.
+for id in publicid:
+    quakehistory_json.append(requests.get('https://api.geonet.org.nz/quake/history/' + id).json())
+for event in range(len(quakehistory_json)):
+    for ind, value in enumerate(quakehistory_json[event]['features']):
+        if (value['properties']['quality']) == 'best':
+            best_json.append({'ID':value['properties']['publicID'],
+                              'modtime_best':UTCDateTime(value['properties']['modificationTime']),
+                              'origin_time':value['properties']['time']})
+        if (value['properties']['quality']) == 'automatic':
+            automatic_json.append({'ID':value['properties']['publicID'],
+                                'modtime_auto':UTCDateTime(value['properties']['modificationTime']),
+                                                           'origin_time':value['properties']['time']})
+#makes dataframes out of all the best and prelim values.
+best = pd.DataFrame(best_json)
+automatic = pd.DataFrame(automatic_json)
+
+#Ensures that they are sorted by publicID. e.g. all prelim values/modifications of an event will be togethor
+idsbest = best.groupby('ID')
+idsauto = automatic.groupby('ID')
+
+#for each df, takes the last value from each ID grouping.
+firstbest = idsbest.last()
+firstauto = idsauto.last()
+
+#merges both dfs based off the ID column.
+combined_best_prelim = pd.merge(firstbest, firstauto, on='ID')
+
+#converts time difference from the best modification time, and the automatic modification time into minutes.
+combined_best_prelim['time_difference_mins'] = (combined_best_prelim['modtime_best'] - combined_best_prelim['modtime_auto'])/60
+combined_best_prelim['origin_time'] = (combined_best_prelim['modtime_best'] - combined_best_prelim['modtime_auto'])/60
+
+#removes any events that tok more than 90 minutes between first prelim and latest modification. SHould remove any
+#corrections made by Brian or Holly.
+combined_best_prelim = combined_best_prelim[combined_best_prelim['time_difference_mins'] < 90] 
+
+#This is to attempt to make the date format the same as the earthquake count date format so I can plot them on the same graph.
+combined_best_prelim['Date Rounded'] = combined_best_prelim['origin_time_x'].str.slice(0,10)
+
+#This turns the time difference into a float so we can graph it. (It is a str before we run this.)
+combined_best_prelim['time_difference_mins'] = combined_best_prelim['time_difference_mins'].astype(float)
+
+
+time_difference_df =  combined_best_prelim.groupby('Date Rounded')
+
+grouped_time_difference_df = pd.DataFrame(time_difference_df)
+
+summed_date_rounded_df = (Counter(combined_best_prelim['Date Rounded']))
+sorted_summed_date_rounded = pd.DataFrame.from_dict(summed_date_rounded_df, orient='index').reset_index()
+
+#renames the columns for context, and sorts the values in chronological day order.
+sorted_summed_date_rounded = sorted_summed_date_rounded.rename(columns={'index':'Date Rounded', 0:'count'})
+sorted_summed_date_rounded = sorted_summed_date_rounded.sort_values(by=['Date Rounded'])
+
+#For each unique day, sums ALL times it took to locate earthquake for that day.
+times = combined_best_prelim.groupby(['Date Rounded'])['time_difference_mins'].sum()
+times_df = pd.DataFrame(times)
+
+final_df = times_df.merge(sorted_summed_date_rounded, left_on='Date Rounded', right_on='Date Rounded')
+
+final_df['Mean time'] = final_df['time_difference_mins']/final_df['count']
+final_df
