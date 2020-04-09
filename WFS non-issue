@@ -1,0 +1,60 @@
+import requests
+from obspy import UTCDateTime
+import datetime
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy
+import numpy as np
+from collections import Counter
+import math
+
+def roundup(x):
+    return int(math.ceil(x / 10.0)) * 10
+
+#Range of times to pull earthquake data from
+timestart = str(UTCDateTime('2015-12-01'))
+timeend = str(UTCDateTime('2019-12-31'))
+
+#wfs requests function that pulls all earthquakes in network interest etween the time periods put in above.
+earthquake_pull = requests.get("http://wfs.geonet.org.nz/geonet/ows?service=WFS&version=1.0.0&request="+
+                                   "GetFeature&typeName=geonet:quake_search_v1&outputFormat=json&cql_filter=BBOX(origin_geom,163,-32,185,-50)+AND+origintime>=" + timestart + 
+                               "+AND+origintime<=" + timeend)
+earthquake_pull_json = earthquake_pull.json()
+
+#pulls all origin times for all events in the json and placed them into the variable, evenlist.
+eventlist = []
+for date in range(len(earthquake_pull_json['features'])):
+    eventlist.append(str(earthquake_pull_json['features'][date]['properties']['origintime'])[:10])
+
+#turns counts the number of earthquakes in each day from the eventlist.
+eventscounted = (Counter(eventlist))
+#converts the event list into a dataframe, eventscounted_df 
+eventscounted_df = pd.DataFrame.from_dict(eventscounted, orient='index').reset_index()
+#renames the columns for context, and sorts the values in chronological day order.
+eventscounted_df = eventscounted_df.rename(columns={'index':'Date', 0:'count'})
+eventscounted_df = eventscounted_df.sort_values(by=['Date'])
+
+#setting up the plt graph to display the data.
+
+plt.figure(figsize=(16,8))
+plt.title('Earthquake Figures')
+plt.xlabel('Dates')
+plt.xticks(np.arange(0, len(eventscounted_df['Date']), len(eventscounted_df['Date'])/10), rotation = 60)
+
+plt.ylabel('Number of Earthquakes Located Per Day')
+plt.yticks(np.arange(0, eventscounted_df['count'].max()*1.1, roundup(eventscounted_df['count'].max()/10)))
+plt.ylim([0, eventscounted_df['count'].max()*1.1])
+
+plt.fill_between(eventscounted_df['Date'], eventscounted_df['count'], 0,
+                 facecolor="gray", # The fill color
+                 color='gray',       # The outline color
+                 alpha=0.2)          # Transparency of the fill
+
+
+# Customize the major grid
+plt.grid(axis='y')
+#removes white space eitherside of the x axis data.
+plt.margins(x=0)
+#plots data.
+plt.plot(eventscounted_df['Date'],eventscounted_df['count'], color='gray', alpha=0.2)
+
